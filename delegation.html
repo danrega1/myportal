@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Delegation Portal | Leadership Portal</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <script src="shared.js"></script>
+  <style>
+    .animate-spin { animation: spin 1s linear infinite; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  
+  <script type="text/babel">
+    const { useState, useEffect, useCallback } = React;
+    
+    const Icon = ({ name, className = "w-5 h-5" }) => {
+      const ref = React.useRef(null);
+      useEffect(() => {
+        if (ref.current) {
+          ref.current.innerHTML = '';
+          const icon = lucide.createElement(lucide.icons[name]);
+          icon.setAttribute('class', className);
+          ref.current.appendChild(icon);
+        }
+      }, [name, className]);
+      return <span ref={ref} className="inline-flex items-center justify-center" />;
+    };
+
+    function DelegationPortal() {
+      const [isLoading, setIsLoading] = useState(true);
+      const [activeTab, setActiveTab] = useState('dashboard');
+      const [currentQuarter, setCurrentQuarter] = useState(getCurrentQuarter());
+      const [syncStatus, setSyncStatus] = useState('idle');
+      const [syncMessage, setSyncMessage] = useState('');
+      const [lastSynced, setLastSynced] = useState(null);
+      const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+      const [allData, setAllData] = useState(null);
+
+      // Delegation-specific state
+      const [delegationLog, setDelegationLog] = useState([]);
+      const [teamMembers, setTeamMembers] = useState([]);
+      const [quarterlyChecklist, setQuarterlyChecklist] = useState({});
+      const [impulseCounter, setImpulseCounter] = useState({ caught: 0, redirected: 0 });
+      const [savedReflections, setSavedReflections] = useState([]);
+      const [weeklyReflection, setWeeklyReflection] = useState({
+        delegated: '', shouldHaveDelegated: '', whoStretched: '', needsChallenge: '', askedOrAnswered: ''
+      });
+      const [newDelegation, setNewDelegation] = useState({ task: '', person: '', level: '2', date: new Date().toISOString().split('T')[0] });
+
+      // Check hash for initial tab
+      useEffect(() => {
+        const hash = window.location.hash.replace('#', '');
+        if (['dashboard', 'weekly', 'quarterly', 'team', 'log', 'tools'].includes(hash)) {
+          setActiveTab(hash);
+        }
+      }, []);
+
+      // Check auth and load data
+      useEffect(() => {
+        const init = async () => {
+          if (!getToken()) {
+            window.location.href = 'index.html';
+            return;
+          }
+          await loadData();
+          setIsLoading(false);
+        };
+        init();
+      }, []);
+
+      // Track unsaved changes
+      const [initialLoadDone, setInitialLoadDone] = useState(false);
+      useEffect(() => {
+        if (initialLoadDone) setHasUnsavedChanges(true);
+      }, [delegationLog, teamMembers, quarterlyChecklist, impulseCounter, savedReflections]);
+
+      const loadData = async () => {
+        setSyncStatus('loading');
+        try {
+          let data = await loadFromCloud();
+          if (!data) data = getDefaultData();
+          setAllData(data);
+          
+          const d = data.delegation || getDefaultDelegationData();
+          setDelegationLog(d.delegationLog || []);
+          setTeamMembers(d.delegationTeamMembers || []);
+          setQuarterlyChecklist(d.quarterlyChecklist || {});
+          setImpulseCounter(d.impulseCounter || { caught: 0, redirected: 0 });
+          setSavedReflections(d.savedReflections || []);
+          
+          setLastSynced(new Date());
+          setSyncStatus('idle');
+          setInitialLoadDone(true);
+        } catch (error) {
+          console.error('Load error:', error);
+          setSyncStatus('error');
+          setSyncMessage('Failed to load data');
+        }
+      };
+
+      const saveData = async () => {
+        setSyncStatus('saving');
+        setSyncMessage('Saving...');
+        try {
+          const newData = {
+            ...allData,
+            delegation: { delegationLog, delegationTeamMembers: teamMembers, quarterlyChecklist, impulseCounter, savedReflections },
+            lastUpdated: new Date().toISOString()
+          };
+          await saveToCloud(newData);
+          setAllData(newData);
+          setSyncStatus('success');
+          setSyncMessage('Saved!');
+          setLastSynced(new Date());
+          setHasUnsavedChanges(false);
+          setTimeout(() => setSyncStatus('idle'), 2000);
+        } catch (error) {
+          setSyncStatus('error');
+          setSyncMessage('Save failed');
+          setTimeout(() => setSyncStatus('idle'), 3000);
+        }
+      };
+
+      const delegationLevels = [
+        { level: 1, desc: "Look into this, I'll decide", color: 'bg-red-100 text-red-800' },
+        { level: 2, desc: "Recommend, I'll approve", color: 'bg-orange-100 text-orange-800' },
+        { level: 3, desc: "Decide, tell me before acting", color: 'bg-yellow-100 text-yellow-800' },
+        { level: 4, desc: "Decide and act, then tell me", color: 'bg-blue-100 text-blue-800' },
+        { level: 5, desc: "Full ownership, no check-in", color: 'bg-green-100 text-green-800' },
+      ];
+
+      const mindsetShifts = [
+        { from: '"I can do this faster myself"', to: '"If I do this, my team never learns"' },
+        { from: '"This is too risky to delegate"', to: '"Risk is how people grow; I\'ll provide guardrails"' },
+        { from: '"They\'re not ready"', to: '"They won\'t be ready until I give them the chance"' },
+        { from: '"I\'ll just fix this small thing"', to: '"This small thing is a learning opportunity"' },
+        { from: '"I need to have all the answers"', to: '"I need to ask the right questions"' },
+      ];
+
+      const coachingQuestions = [
+        "What options have you considered?",
+        "What's your recommendation?",
+        "What's the worst that could happen, and how would we recover?",
+        "What would you need to feel confident doing this?",
+        "What do you think we should do?",
+        "Walk me through your reasoning.",
+        "What have you tried so far?",
+        "What would you do if I weren't available?",
+      ];
+
+      const toggleChecklistItem = (quarter, itemId) => {
+        setQuarterlyChecklist(prev => ({
+          ...prev,
+          [quarter]: { ...prev[quarter], items: prev[quarter].items.map(item => item.id === itemId ? { ...item, done: !item.done } : item) }
+        }));
+      };
+
+      const addDelegation = () => {
+        if (newDelegation.task && newDelegation.person) {
+          setDelegationLog(prev => [...prev, { ...newDelegation, id: Date.now() }]);
+          setNewDelegation({ task: '', person: '', level: '2', date: new Date().toISOString().split('T')[0] });
+        }
+      };
+
+      const saveWeeklyReflection = () => {
+        const reflection = { ...weeklyReflection, id: Date.now(), date: new Date().toISOString().split('T')[0] };
+        setSavedReflections(prev => [reflection, ...prev]);
+        setWeeklyReflection({ delegated: '', shouldHaveDelegated: '', whoStretched: '', needsChallenge: '', askedOrAnswered: '' });
+      };
+
+      const updateTeamMember = (id, field, value) => {
+        setTeamMembers(prev => prev.map(m => m.id === id ? { ...m, [field]: value } : m));
+      };
+
+      const addTeamMember = () => {
+        const newId = Math.max(...teamMembers.map(m => m.id), 0) + 1;
+        setTeamMembers(prev => [...prev, { id: newId, name: `Team Member ${newId}`, stretchProject: '', delegationLevel: 2, notes: '' }]);
+      };
+
+      if (isLoading) {
+        return (
+          <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+            <Icon name="Loader" className="w-12 h-12 text-blue-600 animate-spin" />
+          </div>
+        );
+      }
+
+      const renderSyncBar = () => (
+        <div className="bg-white border-b px-4 py-2 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-4">
+            <a href="index.html" className="flex items-center gap-2 text-gray-600 hover:text-gray-800">
+              <Icon name="ChevronLeft" className="w-4 h-4" /> Home
+            </a>
+            <div className="flex items-center gap-2">
+              {hasUnsavedChanges ? <Icon name="CloudOff" className="w-4 h-4 text-amber-500" /> : <Icon name="Cloud" className="w-4 h-4 text-green-500" />}
+              <span className="text-sm text-gray-600">
+                {hasUnsavedChanges ? 'Unsaved changes' : lastSynced ? `Synced: ${lastSynced.toLocaleTimeString()}` : ''}
+              </span>
+            </div>
+            {syncStatus !== 'idle' && (
+              <span className={`text-sm flex items-center gap-1 ${syncStatus === 'error' ? 'text-red-600' : syncStatus === 'success' ? 'text-green-600' : 'text-blue-600'}`}>
+                {(syncStatus === 'saving' || syncStatus === 'loading') && <Icon name="Loader" className="w-3 h-3 animate-spin" />}
+                {syncMessage}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={loadData} disabled={syncStatus === 'loading' || syncStatus === 'saving'}
+              className="flex items-center gap-1 px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50">
+              <Icon name="Download" className="w-4 h-4" /> Load
+            </button>
+            <button onClick={saveData} disabled={syncStatus === 'loading' || syncStatus === 'saving'}
+              className={`flex items-center gap-1 px-3 py-1.5 text-sm rounded-lg disabled:opacity-50 ${hasUnsavedChanges ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}>
+              <Icon name="Upload" className="w-4 h-4" /> Save
+            </button>
+          </div>
+        </div>
+      );
+
+      const renderDashboard = () => {
+        const totalChecked = Object.values(quarterlyChecklist).flatMap(q => q.items || []).filter(i => i.done).length;
+        const totalItems = Object.values(quarterlyChecklist).flatMap(q => q.items || []).length;
+        return (
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl p-4 text-white">
+                <div className="flex items-center justify-between"><Icon name="Target" className="w-8 h-8 opacity-80" /><span className="text-3xl font-bold">{totalChecked}/{totalItems}</span></div>
+                <p className="mt-2 text-blue-100">Quarterly Goals</p>
+              </div>
+              <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-xl p-4 text-white">
+                <div className="flex items-center justify-between"><Icon name="TrendingUp" className="w-8 h-8 opacity-80" /><span className="text-3xl font-bold">{delegationLog.length}</span></div>
+                <p className="mt-2 text-green-100">Tasks Delegated</p>
+              </div>
+              <div className="bg-gradient-to-br from-purple-500 to-purple-600 rounded-xl p-4 text-white">
+                <div className="flex items-center justify-between"><Icon name="RotateCcw" className="w-8 h-8 opacity-80" /><span className="text-3xl font-bold">{impulseCounter.redirected}</span></div>
+                <p className="mt-2 text-purple-100">Impulses Redirected</p>
+              </div>
+              <div className="bg-gradient-to-br from-amber-500 to-amber-600 rounded-xl p-4 text-white">
+                <div className="flex items-center justify-between"><Icon name="Users" className="w-8 h-8 opacity-80" /><span className="text-3xl font-bold">{teamMembers.filter(m => m.stretchProject).length}/{teamMembers.length}</span></div>
+                <p className="mt-2 text-amber-100">Team w/ Stretch Projects</p>
+              </div>
+            </div>
+            <div className="bg-white rounded-xl shadow-sm border p-6">
+              <h3 className="text-lg font-semibold mb-4 flex items-center gap-2"><Icon name="AlertTriangle" className="w-5 h-5 text-amber-500" />5-Minute Rule Tracker</h3>
+              <p className="text-gray-600 mb-4">When you feel the impulse to do something yourself, wait 5 minutes and ask: "Who could do this?"</p>
+              <div className="flex flex-wrap gap-4 items-center">
+                <button onClick={() => setImpulseCounter(prev => ({ ...prev, caught: prev.caught + 1, redirected: prev.redirected + 1 }))}
+                  className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600">✓ Caught & Redirected</button>
+                <button onClick={() => setImpulseCounter(prev => ({ ...prev, caught: prev.caught + 1 }))}
+                  className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600">⚠ Caught (did it anyway)</button>
+                <div className="text-gray-500">Success rate: {impulseCounter.caught > 0 ? Math.round((impulseCounter.redirected / impulseCounter.caught) * 100) : 0}%</div>
+              </div>
+            </div>
+            <div className="bg-white rounded-xl shadow-sm border p-6">
+              <h3 className="text-lg font-semibold mb-4">Quick Mindset Check</h3>
+              <div className="grid gap-3">
+                {mindsetShifts.slice(0, 3).map((shift, idx) => (
+                  <div key={idx} className="flex items-center gap-4 p-3 bg-gray-50 rounded-lg">
+                    <span className="text-red-500 line-through text-sm flex-1">{shift.from}</span>
+                    <Icon name="ChevronRight" className="w-4 h-4 text-gray-400" />
+                    <span className="text-green-600 font-medium text-sm flex-1">{shift.to}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const renderWeekly = () => (
+        <div className="space-y-6">
+          <div className="bg-white rounded-xl shadow-sm border p-6">
+            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2"><Icon name="Calendar" className="w-5 h-5 text-blue-500" />Weekly Reflection</h3>
+            <div className="space-y-4">
+              {[
+                { key: 'delegated', label: 'What did I delegate that I wanted to do myself?' },
+                { key: 'shouldHaveDelegated', label: 'What did I do that I should have delegated?' },
+                { key: 'whoStretched', label: 'Who on my team stretched this week?' },
+                { key: 'needsChallenge', label: 'Who needs more challenge?' },
+                { key: 'askedOrAnswered', label: 'Did I answer questions or ask questions this week?' }
+              ].map(({ key, label }) => (
+                <div key={key}>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+                  <textarea value={weeklyReflection[key]} onChange={(e) => setWeeklyReflection(prev => ({ ...prev, [key]: e.target.value }))}
+                    className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500" rows={2} />
+                </div>
+              ))}
+              <button onClick={saveWeeklyReflection} className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600">
+                <Icon name="Save" className="w-4 h-4" /> Save Reflection
+              </button>
+            </div>
+          </div>
+          {savedReflections.length > 0 && (
+            <div className="bg-white rounded-xl shadow-sm border p-6">
+              <h3 className="text-lg font-semibold mb-4">Past Reflections</h3>
+              <div className="space-y-4 max-h-96 overflow-y-auto">
+                {savedReflections.map(ref => (
+                  <div key={ref.id} className="p-4 bg-gray-50 rounded-lg">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="font-medium">{ref.date}</span>
+                      <button onClick={() => setSavedReflections(prev => prev.filter(r => r.id !== ref.id))} className="text-red-500 hover:text-red-700">
+                        <Icon name="Trash2" className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="text-sm text-gray-600 space-y-1">
+                      {ref.delegated && <p><strong>Delegated:</strong> {ref.delegated}</p>}
+                      {ref.shouldHaveDelegated && <p><strong>Should have delegated:</strong> {ref.shouldHaveDelegated}</p>}
+                      {ref.whoStretched && <p><strong>Who stretched:</strong> {ref.whoStretched}</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+
+      const renderQuarterly = () => (
+        <div className="space-y-6">
+          <div className="flex gap-2 mb-4">
+            {['Q1', 'Q2', 'Q3', 'Q4'].map(q => (
+              <button key={q} onClick={() => setCurrentQuarter(q)}
+                className={`px-4 py-2 rounded-lg font-medium ${currentQuarter === q ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                {q}
+              </button>
+            ))}
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border p-6">
+            <h3 className="text-lg font-semibold mb-4">{currentQuarter} Goals
+              <span className="ml-2 text-sm font-normal text-gray-500">
+                ({(quarterlyChecklist[currentQuarter]?.items || []).filter(i => i.done).length}/{(quarterlyChecklist[currentQuarter]?.items || []).length} complete)
+              </span>
+            </h3>
+            <div className="space-y-3">
+              {(quarterlyChecklist[currentQuarter]?.items || []).map(item => (
+                <div key={item.id} onClick={() => toggleChecklistItem(currentQuarter, item.id)}
+                  className={`flex items-center gap-3 p-4 rounded-lg cursor-pointer ${item.done ? 'bg-green-50 border border-green-200' : 'bg-gray-50 hover:bg-gray-100'}`}>
+                  {item.done ? <Icon name="CheckCircle" className="w-6 h-6 text-green-500" /> : <Icon name="Circle" className="w-6 h-6 text-gray-300" />}
+                  <span className={item.done ? 'line-through text-gray-500' : ''}>{item.text}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+
+      const renderTeam = () => (
+        <div className="space-y-6">
+          <div className="bg-white rounded-xl shadow-sm border p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold flex items-center gap-2"><Icon name="Users" className="w-5 h-5 text-blue-500" />Team Member Tracking</h3>
+              <button onClick={addTeamMember} className="px-3 py-1 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600">+ Add Member</button>
+            </div>
+            <div className="space-y-4">
+              {teamMembers.map(member => (
+                <div key={member.id} className="p-4 bg-gray-50 rounded-lg">
+                  <div className="grid gap-3">
+                    <div className="flex items-center gap-2">
+                      <input type="text" value={member.name} onChange={(e) => updateTeamMember(member.id, 'name', e.target.value)}
+                        className="flex-1 font-medium p-2 border rounded-lg" />
+                      <button onClick={() => setTeamMembers(prev => prev.filter(m => m.id !== member.id))} className="p-2 text-red-500 hover:text-red-700">
+                        <Icon name="Trash2" className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div>
+                      <label className="block text-sm text-gray-600 mb-1">Stretch Project</label>
+                      <input type="text" value={member.stretchProject} onChange={(e) => updateTeamMember(member.id, 'stretchProject', e.target.value)}
+                        className="w-full p-2 border rounded-lg" placeholder="Current stretch assignment..." />
+                    </div>
+                    <div>
+                      <label className="block text-sm text-gray-600 mb-1">Current Delegation Level</label>
+                      <select value={member.delegationLevel} onChange={(e) => updateTeamMember(member.id, 'delegationLevel', parseInt(e.target.value))} className="w-full p-2 border rounded-lg">
+                        {delegationLevels.map(dl => <option key={dl.level} value={dl.level}>Level {dl.level}: {dl.desc}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm text-gray-600 mb-1">Development Notes</label>
+                      <textarea value={member.notes} onChange={(e) => updateTeamMember(member.id, 'notes', e.target.value)}
+                        className="w-full p-2 border rounded-lg" rows={2} placeholder="Growth areas, progress notes..." />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border p-6">
+            <h3 className="text-lg font-semibold mb-4">Delegation Levels Reference</h3>
+            <div className="space-y-2">
+              {delegationLevels.map(dl => (
+                <div key={dl.level} className={`p-3 rounded-lg ${dl.color}`}>
+                  <span className="font-medium">Level {dl.level}:</span> {dl.desc}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+
+      const renderLog = () => (
+        <div className="space-y-6">
+          <div className="bg-white rounded-xl shadow-sm border p-6">
+            <h3 className="text-lg font-semibold mb-4">Log a Delegation</h3>
+            <div className="grid gap-3">
+              <input type="text" value={newDelegation.task} onChange={(e) => setNewDelegation(prev => ({ ...prev, task: e.target.value }))}
+                className="p-3 border rounded-lg" placeholder="Task/Project delegated..." />
+              <input type="text" value={newDelegation.person} onChange={(e) => setNewDelegation(prev => ({ ...prev, person: e.target.value }))}
+                className="p-3 border rounded-lg" placeholder="Delegated to..." />
+              <div className="flex gap-3">
+                <select value={newDelegation.level} onChange={(e) => setNewDelegation(prev => ({ ...prev, level: e.target.value }))} className="flex-1 p-3 border rounded-lg">
+                  {delegationLevels.map(dl => <option key={dl.level} value={dl.level}>Level {dl.level}</option>)}
+                </select>
+                <input type="date" value={newDelegation.date} onChange={(e) => setNewDelegation(prev => ({ ...prev, date: e.target.value }))} className="p-3 border rounded-lg" />
+              </div>
+              <button onClick={addDelegation} className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600">+ Add to Log</button>
+            </div>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border p-6">
+            <h3 className="text-lg font-semibold mb-4">Delegation History</h3>
+            {delegationLog.length === 0 ? <p className="text-gray-500 text-center py-8">No delegations logged yet.</p> : (
+              <div className="space-y-3">
+                {delegationLog.slice().reverse().map(item => (
+                  <div key={item.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                    <div><p className="font-medium">{item.task}</p><p className="text-sm text-gray-500">To: {item.person} • Level {item.level} • {item.date}</p></div>
+                    <button onClick={() => setDelegationLog(prev => prev.filter(d => d.id !== item.id))} className="text-red-500 hover:text-red-700"><Icon name="Trash2" className="w-4 h-4" /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+
+      const renderTools = () => (
+        <div className="space-y-6">
+          <div className="bg-white rounded-xl shadow-sm border p-6">
+            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2"><Icon name="MessageSquare" className="w-5 h-5 text-green-500" />Coaching Questions</h3>
+            <div className="grid gap-2">
+              {coachingQuestions.map((q, idx) => (
+                <div key={idx} className="p-3 bg-green-50 rounded-lg text-green-800 border border-green-200">"{q}"</div>
+              ))}
+            </div>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border p-6">
+            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2"><Icon name="Brain" className="w-5 h-5 text-purple-500" />Mindset Shifts</h3>
+            <div className="space-y-3">
+              {mindsetShifts.map((shift, idx) => (
+                <div key={idx} className="flex items-center gap-4 p-3 bg-gray-50 rounded-lg">
+                  <span className="text-red-500 line-through text-sm flex-1">{shift.from}</span>
+                  <Icon name="ChevronRight" className="w-4 h-4 text-gray-400" />
+                  <span className="text-green-600 font-medium text-sm flex-1">{shift.to}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border p-6">
+            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2"><Icon name="Award" className="w-5 h-5 text-amber-500" />The 70% Rule</h3>
+            <div className="p-4 bg-amber-50 rounded-lg border border-amber-200">
+              <p className="text-amber-800 font-medium">If someone can do a task at least 70% as well as you, delegate it.</p>
+              <p className="text-amber-600 mt-2 text-sm">The 30% gap is the cost of developing your team—and it closes over time.</p>
+            </div>
+          </div>
+        </div>
+      );
+
+      const tabs = [
+        { id: 'dashboard', label: 'Dashboard', icon: 'Target' },
+        { id: 'weekly', label: 'Weekly', icon: 'Calendar' },
+        { id: 'quarterly', label: 'Quarterly', icon: 'TrendingUp' },
+        { id: 'team', label: 'Team', icon: 'Users' },
+        { id: 'log', label: 'Log', icon: 'CheckCircle' },
+        { id: 'tools', label: 'Tools', icon: 'Brain' },
+      ];
+
+      return (
+        <div className="min-h-screen bg-gray-100">
+          <div className="bg-gradient-to-r from-blue-600 to-blue-800 text-white p-6">
+            <h1 className="text-2xl font-bold">Delegation & Team Growth Portal</h1>
+            <p className="text-blue-100 mt-1">Building a team that thrives without you</p>
+          </div>
+
+          {renderSyncBar()}
+
+          <div className="border-b bg-white sticky top-0 z-10">
+            <div className="flex overflow-x-auto">
+              {tabs.map(tab => (
+                <button key={tab.id} onClick={() => { setActiveTab(tab.id); window.location.hash = tab.id; }}
+                  className={`flex items-center gap-2 px-6 py-4 font-medium border-b-2 whitespace-nowrap ${
+                    activeTab === tab.id ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}>
+                  <Icon name={tab.icon} className="w-4 h-4" />{tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="p-6 max-w-5xl mx-auto">
+            {activeTab === 'dashboard' && renderDashboard()}
+            {activeTab === 'weekly' && renderWeekly()}
+            {activeTab === 'quarterly' && renderQuarterly()}
+            {activeTab === 'team' && renderTeam()}
+            {activeTab === 'log' && renderLog()}
+            {activeTab === 'tools' && renderTools()}
+          </div>
+
+          <div className="bg-gray-800 text-gray-400 p-4 text-center text-sm">
+            <p>"Delegation isn't about giving away work you don't want to do. It's about giving away work you <em>do</em> want to do, because someone else needs the opportunity more than you need the satisfaction."</p>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.render(<DelegationPortal />, document.getElementById('root'));
+  </script>
+</body>
+</html>
